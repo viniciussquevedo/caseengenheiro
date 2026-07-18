@@ -1,0 +1,402 @@
+# Documentação técnica
+
+## 1. Visão geral
+
+O projeto transforma nove fontes brutas em um modelo analítico dimensional no Databricks.
+
+A solução foi organizada em cinco notebooks executáveis em sequência:
+
+00_exploracao_fontes
+01_ingestao_bronze
+02_transformacao_silver_dimensoes
+03_transformacao_silver_fatos
+04_modelagem_gold
+
+## 2. Exploração das fontes
+
+O notebook de exploração executa:
+
+- busca recursiva da pasta de fontes;
+- identificação dinâmica do usuário e do workspace;
+- leitura de CSV, Excel, JSON, NDJSON e arquivo delimitado por pipe;
+- inventário de arquivos e colunas;
+- análise de schema;
+- perfil de valores nulos e vazios;
+- análise de chaves de negócio;
+- validação de datas;
+- validação de campos numéricos;
+- análise de domínios categóricos;
+- integridade referencial;
+- consistência financeira;
+- consistência temporal.
+
+## 3. Problemas de qualidade identificados
+
+### 3.1 Duplicidades
+
+Foram identificadas duplicidades em entidades cadastrais e transacionais.
+
+Exemplos:
+
+- clientes com versões diferentes;
+- canais com variações de nomenclatura;
+- vendedores relacionados a canais válidos e inválidos;
+- produtos com versões atualizadas;
+- pedidos com versões diferentes.
+
+### 3.2 Padronização textual
+
+Foram encontradas variações como:
+
+Ativo
+ativo
+ATIVO
+
+
+Também foram identificadas diferenças de:
+
+- acentuação;
+- caixa;
+- espaços;
+- separadores;
+- abreviações;
+- nomes completos e siglas de estados.
+
+### 3.3 Datas inválidas
+
+Exemplos encontrados:
+
+2025-13-40
+31/02/2025 10:00
+
+Datas inválidas foram convertidas para `NULL` por funções seguras e sinalizadas com indicadores de qualidade.
+
+### 3.4 Números inválidos
+
+Exemplos:
+
+N/A
+unknown
+
+As conversões utilizam `try_cast`, evitando falha completa do pipeline.
+
+### 3.5 Integridade referencial
+
+Foram identificados exemplos de registros órfãos:
+
+Cliente: C9999
+Pedido: O99999
+Produto: P8888
+Canal: CH99
+
+Esses registros não foram eliminados. Eles foram preservados e sinalizados.
+
+Na Gold, relacionamentos inválidos são direcionados ao membro técnico `NAO_IDENTIFICADO`.
+
+### 3.6 Consistência financeira
+
+Foram realizadas as validações:
+
+gross_amount - discount_amount = net_amount
+quantity × unit_price = total_item
+
+Divergências foram mantidas e registradas nas colunas:
+
+dq_financial_mismatch
+dq_item_total_mismatch
+financial_difference
+item_total_difference
+
+### 3.7 Consistência logística
+
+Foram avaliadas situações como:
+
+- entrega anterior ao envio;
+- status entregue sem `delivered_at`;
+- status em trânsito com `delivered_at`;
+- custo logístico inválido;
+- pedido logístico órfão.
+
+As inconsistências foram preservadas com indicadores `dq_*`.
+
+## 4. Camada Bronze
+
+### 4.1 Estratégia
+
+A Bronze representa o dado recebido da origem acrescido de metadados técnicos.
+
+### 4.2 Metadados
+
+| Coluna | Descrição |
+|---|---|
+| `_source_record_hash` | Hash determinístico do registro |
+| `_source_file` | Nome do arquivo de origem |
+| `_source_path` | Caminho do arquivo |
+| `_ingestion_batch_id` | Identificador do lote |
+| `_ingestion_timestamp_utc` | Timestamp da ingestão |
+
+### 4.3 Tabelas
+
+```text
+bronze_canais
+bronze_clientes
+bronze_entregas
+bronze_ocorrencias
+bronze_pedidos_cabecalho
+bronze_pedidos_itens
+bronze_produtos
+bronze_regioes
+bronze_vendedores
+bronze_ingestion_audit
+```
+
+## 5. Camada Silver
+
+### 5.1 Normalização
+
+Foram criadas funções reutilizáveis para:
+
+- normalização de IDs;
+- remoção de acentuação;
+- padronização de domínios;
+- normalização de booleanos;
+- normalização de UFs;
+- conversão flexível de timestamps;
+- conversão flexível de decimais;
+- conversão de inteiros.
+
+### 5.2 Deduplicação
+
+A deduplicação utiliza `Window` e `row_number`.
+
+Cada entidade possui uma pontuação de qualidade baseada em critérios como:
+
+- campos obrigatórios preenchidos;
+- relacionamento válido;
+- formato válido;
+- consistência matemática;
+- data de atualização;
+- ausência de marcação de duplicidade.
+
+O hash do registro é utilizado como último critério de desempate, tornando a escolha determinística.
+
+### 5.3 Preservação do dado original
+
+As colunas tratadas são mantidas junto com versões `*_original`.
+
+Isso permite:
+
+- auditoria;
+- comparação;
+- investigação;
+- rastreabilidade.
+
+### 5.4 Indicadores de qualidade
+
+As colunas de qualidade utilizam o prefixo:
+
+```text
+dq_
+```
+
+Exemplos:
+
+```text
+dq_duplicate_key
+dq_conflicting_duplicate
+dq_orphan_customer
+dq_orphan_product
+dq_invalid_order_date
+dq_invalid_delivery_cost
+dq_financial_mismatch
+dq_item_total_mismatch
+```
+
+## 6. Modelo Gold
+
+### 6.1 Dimensões
+
+```text
+dim_data
+dim_clientes
+dim_produtos
+dim_vendedores
+dim_canais
+dim_regioes
+```
+
+As dimensões possuem:
+
+- chave técnica;
+- chave de negócio;
+- atributos descritivos;
+- indicador de qualidade;
+- membro não identificado;
+- metadados de processamento.
+
+### 6.2 Fatos
+
+#### `fct_pedidos`
+
+Granularidade: uma linha por pedido.
+
+Métricas:
+
+- receita bruta;
+- descontos;
+- receita líquida;
+- quantidade de pedidos;
+- quantidade de cancelados;
+- quantidade de concluídos.
+
+#### `fct_pedidos_itens`
+
+Granularidade: uma linha por item do pedido.
+
+Métricas:
+
+- quantidade;
+- preço unitário;
+- total calculado;
+- total informado;
+- diferença do item.
+
+#### `fct_entregas`
+
+Granularidade: uma linha por entrega.
+
+Métricas:
+
+- custo logístico;
+- duração da entrega;
+- dias de atraso;
+- entrega concluída;
+- entrega atrasada.
+
+#### `fct_ocorrencias`
+
+Granularidade: uma linha por ocorrência.
+
+Métricas:
+
+- quantidade de ocorrências;
+- ocorrência encerrada;
+- tempo de resolução em horas.
+
+### 6.3 Indicadores mensais
+
+A tabela `agg_indicadores_mensais` disponibiliza:
+
+- pedidos;
+- clientes distintos;
+- receita bruta;
+- descontos;
+- receita líquida;
+- ticket médio;
+- cancelamentos;
+- taxa de cancelamento;
+- pedidos entregues;
+- entregas atrasadas;
+- taxa de atraso;
+- custo logístico;
+- tempo médio de entrega;
+- ocorrências;
+- tempo médio de resolução;
+- percentual de pedidos com problema de qualidade.
+
+## 7. Validações implementadas
+
+As validações estão distribuídas nos notebooks das respectivas camadas.
+
+Foram verificados:
+
+- presença das fontes;
+- quantidade de arquivos;
+- quantidade de registros;
+- chaves nulas;
+- chaves duplicadas;
+- chaves distintas;
+- granularidade;
+- integridade referencial;
+- conversão de datas;
+- conversão de números;
+- consistência financeira;
+- consistência temporal;
+- quantidade persistida;
+- existência das tabelas;
+- membro técnico das dimensões.
+
+Não foi criado um notebook adicional de validação integrada. A decisão foi manter as verificações próximas às transformações responsáveis por cada regra.
+
+## 8. Premissas
+
+- os arquivos representam snapshots do negócio;
+- `order_id` identifica unicamente um pedido após consolidação;
+- `order_id + item_seq` identifica um item;
+- `delivery_id` identifica uma entrega;
+- `occurrence_id` identifica uma ocorrência;
+- registros duplicados representam versões ou correções;
+- o registro mais completo, consistente e atualizado deve ser priorizado;
+- relacionamentos inválidos não devem provocar descarte do fato;
+- a chave técnica `0` representa o membro não identificado;
+- diferenças financeiras devem ser sinalizadas, não corrigidas sem evidência.
+
+## 9. Limitações
+
+- processamento em lote completo;
+- ausência de orquestração;
+- ausência de carga incremental;
+- ausência de schema evolution controlado por contrato externo;
+- ausência de testes unitários fora dos notebooks;
+- ausência de histórico SCD;
+- ausência de observabilidade externa;
+- ausência de políticas de mascaramento;
+- ausência de camada semântica de BI;
+- execução direcionada ao ambiente disponível do Databricks.
+
+## 10. Performance
+
+Para o volume do case, a estratégia de processamento completo é suficiente.
+
+Para volumes maiores, recomenda-se:
+
+- particionar fatos por data;
+- executar `OPTIMIZE`;
+- utilizar `ZORDER` nas principais chaves de consulta;
+- evitar contagens repetidas;
+- persistir resultados intermediários reutilizados;
+- implementar processamento incremental;
+- aplicar broadcast join somente após análise de tamanho;
+- monitorar planos de execução;
+- separar tabelas de auditoria e dados de negócio.
+
+## 11. Governança
+
+Evoluções recomendadas:
+
+- catálogo de dados;
+- descrições de tabelas e colunas;
+- classificação de dados pessoais;
+- mascaramento de e-mail;
+- permissões por domínio;
+- lineage;
+- políticas de retenção;
+- data owners e data stewards;
+- contratos de dados;
+- SLAs e alertas.
+
+## 12. Ordem de execução
+
+```text
+00_exploracao_fontes
+        ↓
+01_ingestao_bronze
+        ↓
+02_transformacao_silver_dimensoes
+        ↓
+03_transformacao_silver_fatos
+        ↓
+04_modelagem_gold
+```
+
+Cada notebook é independente o suficiente para localizar dinamicamente as tabelas anteriores, mas depende da conclusão lógica.

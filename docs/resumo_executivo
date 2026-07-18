@@ -1,0 +1,221 @@
+# Resumo executivo técnico
+
+## Contexto
+
+Os dados disponibilizados para o case estavam distribuídos em nove arquivos de diferentes formatos, incluindo CSV, Excel, JSON, NDJSON e texto delimitado.
+
+As fontes representavam clientes, produtos, canais, regiões, vendedores, pedidos, itens, entregas e ocorrências operacionais.
+
+O principal desafio foi transformar essas fontes heterogêneas em uma base confiável e preparada para consumo por um Analista de BI.
+
+## Solução construída
+
+Foi desenvolvida uma arquitetura em camadas no Databricks utilizando Python, PySpark, Spark SQL e Delta Lake.
+
+```text
+Fontes → Landing → Bronze → Silver → Gold → BI
+```
+
+### Bronze
+
+A camada Bronze preserva os dados das fontes e adiciona metadados de rastreabilidade, incluindo:
+
+- arquivo de origem;
+- caminho;
+- lote de ingestão;
+- timestamp;
+- hash do registro.
+
+### Silver
+
+A Silver realiza:
+
+- normalização;
+- conversão de tipos;
+- padronização de domínios;
+- deduplicação;
+- validação de relacionamentos;
+- consistência financeira;
+- consistência temporal;
+- sinalização de problemas de qualidade.
+
+Os registros problemáticos foram preservados sempre que possível, utilizando indicadores `dq_*`.
+
+### Gold
+
+Foi criado um modelo dimensional com seis dimensões:
+
+- data;
+- clientes;
+- produtos;
+- vendedores;
+- canais;
+- regiões.
+
+Também foram construídos quatro fatos com granularidades independentes:
+
+- pedidos;
+- itens dos pedidos;
+- entregas;
+- ocorrências.
+
+Uma tabela mensal de indicadores foi disponibilizada para facilitar o consumo pelo BI.
+
+## Principais decisões técnicas
+
+### Separação das granularidades
+
+Pedidos, itens, entregas e ocorrências foram mantidos em fatos separados.
+
+Essa decisão evita multiplicação de receita e demais métricas ao relacionar entidades com diferentes cardinalidades.
+
+### Deduplicação determinística
+
+Os registros duplicados foram priorizados com base em:
+
+- validade;
+- completude;
+- consistência;
+- relacionamentos existentes;
+- data de atualização;
+- hash como desempate.
+
+### Preservação dos problemas
+
+Valores inválidos não foram silenciosamente corrigidos ou descartados.
+
+As inconsistências foram mantidas em colunas originais e sinalizadas por indicadores de qualidade.
+
+### Membro não identificado
+
+As dimensões Gold possuem um membro técnico `NAO_IDENTIFICADO`, com chave `0`.
+
+Isso permite preservar fatos órfãos sem quebrar os relacionamentos do modelo analítico.
+
+### Chaves técnicas determinísticas
+
+As chaves das dimensões e fatos são geradas com SHA-256, garantindo estabilidade entre execuções.
+
+## Principais problemas encontrados
+
+Foram identificados:
+
+- duplicidades em cadastros e pedidos;
+- variações de caixa e acentuação;
+- campos vazios;
+- datas em múltiplos formatos;
+- datas impossíveis;
+- números representados por texto;
+- chaves órfãs;
+- divergências financeiras;
+- inconsistências entre status e datas logísticas;
+- conflitos entre diferentes versões de um registro.
+
+Exemplos encontrados:
+
+```text
+2025-13-40
+31/02/2025 10:00
+N/A
+unknown
+C9999
+O99999
+P8888
+CH99
+```
+
+## Modelo final
+
+```text
+dim_clientes ─────┐
+dim_vendedores ───┤
+dim_canais ───────┤
+dim_regioes ──────┼── fct_pedidos
+dim_data ─────────┘        │
+                            ├── fct_pedidos_itens ── dim_produtos
+                            ├── fct_entregas
+                            └── fct_ocorrencias
+```
+
+## Indicadores disponibilizados
+
+A solução permite analisar diretamente:
+
+- volume de pedidos;
+- receita bruta e líquida;
+- descontos;
+- ticket médio;
+- cancelamentos;
+- taxa de cancelamento;
+- desempenho por período;
+- desempenho por cliente;
+- desempenho por vendedor;
+- desempenho por canal;
+- desempenho por região;
+- desempenho por categoria e produto;
+- entregas concluídas;
+- entregas atrasadas;
+- custo logístico;
+- tempo médio de entrega;
+- volume de ocorrências;
+- tempo médio de resolução;
+- percentual de registros com problemas de qualidade.
+
+## Validações
+
+As validações foram incorporadas aos notebooks de cada camada.
+
+Foram verificados:
+
+- quantidade de registros;
+- granularidade;
+- duplicidades;
+- chaves nulas;
+- relacionamentos órfãos;
+- consistência financeira;
+- consistência temporal;
+- persistência das tabelas;
+- presença dos membros técnicos;
+- resultado das auditorias.
+
+Foram criadas tabelas de auditoria para Bronze, Silver e Gold.
+
+## Limitações
+
+A solução foi construída para processamento em lote e para o volume disponibilizado no case.
+
+Não foram implementados:
+
+- ingestão incremental;
+- orquestração automática;
+- SCD;
+- monitoramento externo;
+- alertas;
+- políticas avançadas de segurança;
+- testes automatizados fora dos notebooks.
+
+## Próximos passos recomendados
+
+Para evolução produtiva, recomenda-se:
+
+1. implementar carga incremental com Delta `MERGE`;
+2. criar controle de arquivos e checkpoints;
+3. orquestrar o fluxo com Databricks Workflows;
+4. implementar testes automatizados;
+5. adicionar contratos de schema;
+6. criar monitoramento de qualidade;
+7. implementar histórico das dimensões;
+8. aplicar governança e mascaramento;
+9. otimizar os fatos por data e principais dimensões;
+10. construir uma camada semântica para BI.
+
+## Resultado
+
+A solução final transforma fontes heterogêneas e inconsistentes em um modelo analítico:
+
+- organizado;
+- rastreável;
+- auditável;
+- documentado;
+- orientado ao negócio;
+- pronto para consumo por BI.
